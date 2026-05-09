@@ -300,435 +300,328 @@
 <div class="toast" id="toastEl"></div>
 
 <script>
-    // ============ STATE ============
-    let balance = 500;
-    let bet = 10;
-    let multiCount = 1;
-    let streak = 0;
-    let streakMult = 1.0;
-    let bestWin = 0;
-    let totalDrops = 0;
-    let ballType = 'gold';
-    let activeBoosts = {};
-    let boostUsedThisRound = {};
-    let dropping = false;
+/* ============================
+   ⚡ HIGH PERFORMANCE ENGINE
+============================ */
 
-    const MULTIPLIERS = [0.2, 0.4, 0.7, 1.0, 1.5, 2.5, 4.0, 2.5, 1.5, 1.0, 0.7, 0.4, 0.2];
-    const PEG_ROWS = 9;
-    const PEG_COLS = 9;
+let balance = 500;
+let bet = 10;
+let multiCount = 1;
+let streak = 0;
+let streakMult = 1;
+let bestWin = 0;
+let totalDrops = 0;
 
-    let pegs = [];
-    let balls = [];
-    let sparkles = [];
+let balls = [];
+let pegs = [];
+let sparkles = [];
 
-    // Canvas
-    const canvas = document.getElementById('plinkoCanvas');
-    const ctx = canvas.getContext('2d');
-    let W, H, slotW, slotY, slotH;
+let dropping = false;
 
-    // ============ STORAGE ============
-    function save() {
-        try { localStorage.setItem('plinkoClean', JSON.stringify({ balance, bestWin, totalDrops })); } catch (e) {}
-    }
+const MULTIPLIERS = [0.2,0.4,0.7,1,1.5,2.5,4,2.5,1.5,1,0.7,0.4,0.2];
 
-    function load() {
-        try {
-            const d = JSON.parse(localStorage.getItem('plinkoClean'));
-            if (d) { balance = d.balance ?? 500;
-                bestWin = d.bestWin ?? 0;
-                totalDrops = d.totalDrops ?? 0; }
-        } catch (e) {}
-    }
+const canvas = document.getElementById("plinkoCanvas");
+const ctx = canvas.getContext("2d");
 
-    // ============ UI UPDATES ============
-    function ui() {
-        document.getElementById('balDisp').textContent = balance;
-        document.getElementById('streakVal').textContent = streak;
-        document.getElementById('multVal').textContent = streakMult.toFixed(1) + 'x';
-        document.getElementById('bestVal').textContent = bestWin;
-        document.getElementById('dropsVal').textContent = totalDrops;
-        document.getElementById('betVal').textContent = bet;
-        document.getElementById('multiVal').textContent = multiCount;
-        const btn = document.getElementById('dropBtn');
-        const cost = getTotalCost();
-        btn.textContent = `⚪ DROP ${multiCount>1?'×'+multiCount:''} (${cost})`;
-        btn.disabled = dropping || balance < cost;
-        save();
-    }
+let W,H,slotW,slotY;
 
-    function getTotalCost() {
-        let c = bet * multiCount;
-        if (activeBoosts['double']) c += 10;
-        if (activeBoosts['extraBall']) c += 15;
-        if (activeBoosts['reroll']) c += 20;
-        if (activeBoosts['streakShield']) c += 25;
-        if (ballType === 'fire') c += bet * multiCount;
-        if (ballType === 'void') c += bet * multiCount;
-        if (ballType === 'ice') c += Math.floor(bet * multiCount * 0.5);
-        return c;
-    }
+/* ============================
+   ⚙️ RESIZE
+============================ */
+function resize(){
+    const r = canvas.parentElement.getBoundingClientRect();
+    W = canvas.width = r.width;
+    H = canvas.height = r.height;
 
-    function setBallType(t) {
-        ballType = t;
-        document.querySelectorAll('.ball-dot').forEach(d => d.classList.remove('active'));
-        document.querySelector(`[data-type="${t}"]`)?.classList.add('active');
-    }
+    slotY = H*0.88;
+    slotW = W / MULTIPLIERS.length;
 
-    function toggleBoost(id) {
-        if (boostUsedThisRound[id]) return;
-        if (activeBoosts[id]) { delete activeBoosts[id]; } else { activeBoosts[id] = true; }
-        renderBoostCards();
-        ui();
-    }
+    buildPegs();
+}
+window.addEventListener("resize",resize);
 
-    function renderBoostCards() {
-        document.querySelectorAll('.boost-card').forEach(card => {
-            const id = card.dataset.boost;
-            card.classList.remove('active-boost', 'used');
-            if (boostUsedThisRound[id]) card.classList.add('used');
-            if (activeBoosts[id]) card.classList.add('active-boost');
-        });
-    }
+/* ============================
+   ⚙️ PEG GRID (optimized)
+============================ */
+const grid = {};
+const CELL = 60;
 
-    function adjBet(d) { bet = Math.max(1, Math.min(balance, bet + d));
-        ui(); }
+function gridKey(x,y){
+    return ((x/CELL)|0)+"," + ((y/CELL)|0);
+}
 
-    function adjMulti(d) { multiCount = Math.max(1, Math.min(10, multiCount + d));
-        ui(); }
+function buildPegs(){
+    pegs = [];
+    for(let k in grid) delete grid[k];
 
-    function resetAll() {
-        balance = 500;
-        streak = 0;
-        streakMult = 1.0;
-        bestWin = 0;
-        totalDrops = 0;
-        activeBoosts = {};
-        boostUsedThisRound = {};
-        ballType = 'gold';
-        multiCount = 1;
-        bet = 10;
-        renderBoostCards();
-        ui();
-        toast('🔄 All reset');
-    }
+    const rows = 9;
+    const cols = 9;
 
-    function toast(msg) {
-        const el = document.getElementById('toastEl');
-        el.textContent = msg;
-        el.classList.add('show');
-        clearTimeout(el._t);
-        el._t = setTimeout(() => el.classList.remove('show'), 1800);
-    }
+    const rowGap = H*0.08;
+    const colGap = W/(cols+1);
 
-    // ============ PEGS ============
-    function calcPegs() {
-        pegs = [];
-        const startY = H * 0.06;
-        const rowSp = (H * 0.78) / PEG_ROWS;
-        const colSp = W / (PEG_COLS + 1);
-        for (let r = 0; r < PEG_ROWS; r++) {
-            const offX = r % 2 === 0 ? 0 : colSp / 2;
-            const n = r % 2 === 0 ? PEG_COLS : PEG_COLS - 1;
-            for (let c = 0; c < n; c++) {
-                pegs.push({ x: offX + colSp * (c + 1), y: startY + r * rowSp, r: 5, hit: 0 });
-            }
-        }
-        slotY = H * 0.88;
-        slotH = H * 0.12;
-        slotW = W / MULTIPLIERS.length;
-    }
+    for(let r=0;r<rows;r++){
+        const offset = (r%2)*colGap/2;
+        const count = r%2===0 ? cols : cols-1;
 
-    // ============ DRAWING ============
-    function draw() {
-        ctx.clearRect(0, 0, W, H);
-        // BG
-        const bg = ctx.createLinearGradient(0, 0, 0, H);
-        bg.addColorStop(0, '#12122a');
-        bg.addColorStop(0.5, '#181835');
-        bg.addColorStop(1, '#0e0e22');
-        ctx.fillStyle = bg;
-        ctx.fillRect(0, 0, W, H);
-        // Pegs
-        pegs.forEach(p => {
-            const s = p.hit > 0 ? 1.4 - p.hit : 1;
-            const r = p.r * s;
-            const g = ctx.createRadialGradient(p.x - r * 0.3, p.y - r * 0.3, r * 0.1, p.x, p.y, r);
-            g.addColorStop(0, '#ffeebb');
-            g.addColorStop(0.5, '#e0b030');
-            g.addColorStop(1, '#705010');
-            ctx.fillStyle = g;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-            ctx.fill();
-            if (p.hit > 0) {
-                ctx.strokeStyle = `rgba(255,255,255,${p.hit})`;
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-        });
-        // Slots
-        MULTIPLIERS.forEach((m, i) => {
-            const x = i * slotW;
-            const c = m >= 3 ? 'rgba(255,80,120,0.3)' : m >= 1.5 ? 'rgba(255,160,40,0.25)' : 'rgba(255,255,255,0.06)';
-            ctx.fillStyle = c;
-            ctx.fillRect(x, slotY, slotW - 0.5, slotH);
-            ctx.fillStyle = m >= 3 ? '#ff5078' : m >= 1.5 ? '#ffa028' : '#777';
-            ctx.font = `bold ${Math.min(13,slotW*0.38)}px 'Segoe UI'`;
-            ctx.textAlign = 'center';
-            ctx.fillText(m + 'x', x + slotW / 2, slotY + slotH / 2 + 5);
-        });
-        // Balls
-        balls.forEach(b => {
-            if (b.done) return;
-            // Trail
-            if (b.trail.length > 1) {
-                ctx.strokeStyle = b.color + '30';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(b.trail[0].x, b.trail[0].y);
-                for (let i = 1; i < b.trail.length; i++) ctx.lineTo(b.trail[i].x, b.trail[i].y);
-                ctx.stroke();
-            }
-            // Glow
-            const gr = ctx.createRadialGradient(b.x, b.y, b.r * 0.5, b.x, b.y, b.r * 3);
-            gr.addColorStop(0, b.glow);
-            gr.addColorStop(1, 'transparent');
-            ctx.fillStyle = gr;
-            ctx.beginPath();
-            ctx.arc(b.x, b.y, b.r * 3, 0, Math.PI * 2);
-            ctx.fill();
-            // Body
-            const bg2 = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.3, b.r * 0.15, b.x, b.y, b.r);
-            bg2.addColorStop(0, '#fff');
-            bg2.addColorStop(0.35, b.color);
-            bg2.addColorStop(1, '#000');
-            ctx.fillStyle = bg2;
-            ctx.beginPath();
-            ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(255,255,255,0.45)';
-            ctx.beginPath();
-            ctx.arc(b.x - b.r * 0.3, b.y - b.r * 0.3, b.r * 0.28, 0, Math.PI * 2);
-            ctx.fill();
-        });
-        // Sparkles
-        sparkles.forEach(s => {
-            ctx.fillStyle = s.color;
-            ctx.globalAlpha = s.a;
-            ctx.beginPath();
-            ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-            ctx.fill();
-        });
-        ctx.globalAlpha = 1;
-    }
-
-    function ballColor() {
-        if (ballType === 'fire') return { color: '#ff5570', glow: 'rgba(255,85,112,0.7)' };
-        if (ballType === 'ice') return { color: '#70d0ff', glow: 'rgba(112,208,255,0.7)' };
-        if (ballType === 'void') return { color: '#c070f0', glow: 'rgba(192,112,240,0.7)' };
-        return { color: '#f0c040', glow: 'rgba(240,192,64,0.7)' };
-    }
-
-    function spark(x, y, n, col) {
-        for (let i = 0; i < n; i++) {
-            sparkles.push({
-                x,
-                y,
-                vx: (Math.random() - 0.5) * 4,
-                vy: (Math.random() - 0.5) * 4 - 2,
-                r: Math.random() * 3 + 1,
-                color: col || '#ffeebb',
-                a: 1,
-                life: 15 + Math.random() * 20
-            });
-        }
-        if (sparkles.length > 200) sparkles.splice(0, 50);
-    }
-
-    // ============ PHYSICS ============
-    function launchBalls() {
-        if (dropping) return;
-        const cost = getTotalCost();
-        if (balance < cost) { toast('Not enough tokens!'); return; }
-        balance -= cost;
-        dropping = true;
-        totalDrops += multiCount;
-        // Mark boosts as used for this round
-        Object.keys(activeBoosts).forEach(k => { boostUsedThisRound[k] = true; });
-        const boostsSnapshot = { ...activeBoosts };
-        activeBoosts = {};
-        renderBoostCards();
-        ui();
-
-        for (let i = 0; i < multiCount; i++) {
-            const startX = W * 0.15 + (Math.random() * W * 0.7);
-            const bc = ballColor();
-            const ball = {
-                x: startX,
-                y: 6,
-                vx: (Math.random() - 0.5) * 1.5,
-                vy: 0.5,
-                r: 8,
-                color: bc.color,
-                glow: bc.glow,
-                trail: [],
-                done: false,
-                resultMult: 0,
-                landed: false,
-                timer: 0
+        for(let c=0;c<count;c++){
+            let p = {
+                x: offset + colGap*(c+1),
+                y: 60 + r*rowGap,
+                r: 5
             };
-            balls.push(ball);
-            simulate(ball, boostsSnapshot, i === 0);
+            pegs.push(p);
+
+            const key = gridKey(p.x,p.y);
+            if(!grid[key]) grid[key]=[];
+            grid[key].push(p);
+        }
+    }
+}
+
+/* ============================
+   🎯 DROP
+============================ */
+function launchBalls(){
+    if(dropping) return;
+
+    const cost = bet * multiCount;
+    if(balance < cost) return;
+
+    balance -= cost;
+    dropping = true;
+
+    for(let i=0;i<multiCount;i++){
+        balls.push(createBall());
+    }
+}
+
+function createBall(){
+    return {
+        x: W*0.5 + (Math.random()-0.5)*W*0.4,
+        y: 0,
+        vx: (Math.random()-0.5)*1.2,
+        vy: 0,
+        r: 8,
+        trail: [],
+        done:false
+    };
+}
+
+/* ============================
+   🧠 ADDICTIVE BIAS
+============================ */
+function applyBias(ball){
+    // slight pull toward center (creates "near miss" effect)
+    const center = W/2;
+    const dx = center - ball.x;
+    ball.vx += dx * 0.0005;
+}
+
+/* ============================
+   ⚡ PHYSICS STEP
+============================ */
+function stepBall(b){
+
+    if(b.done) return;
+
+    b.vy += 0.35;
+    applyBias(b);
+
+    b.x += b.vx;
+    b.y += b.vy;
+
+    b.vx *= 0.995;
+
+    // walls
+    if(b.x < b.r){ b.x=b.r; b.vx*=-0.6; }
+    if(b.x > W-b.r){ b.x=W-b.r; b.vx*=-0.6; }
+
+    // GRID COLLISION (fast)
+    const key = gridKey(b.x,b.y);
+    const nearby = grid[key] || [];
+
+    for(let p of nearby){
+        const dx = b.x - p.x;
+        const dy = b.y - p.y;
+
+        const dist2 = dx*dx + dy*dy;
+        const min = (b.r + p.r);
+
+        if(dist2 < min*min){
+            const dist = Math.sqrt(dist2);
+            const nx = dx / dist;
+            const ny = dy / dist;
+
+            b.x = p.x + nx * min;
+            b.y = p.y + ny * min;
+
+            const speed = Math.sqrt(b.vx*b.vx + b.vy*b.vy)*0.7;
+
+            b.vx = nx*speed + (Math.random()-0.5)*1.5;
+            b.vy = -Math.abs(ny*speed)*0.6;
+
+            spawnSpark(b.x,b.y,3);
         }
     }
 
-    function simulate(ball, boosts, isFirst) {
-        function step() {
-            if (ball.done) return;
-            if (ball.landed) {
-                ball.timer++;
-                if (ball.timer > 50) { ball.done = true;
-                    checkAllDone(); }
-                return;
-            }
-            ball.vy += 0.3;
-            ball.y += ball.vy;
-            ball.x += ball.vx;
-            ball.vx *= 0.998;
-            ball.trail.push({ x: ball.x, y: ball.y });
-            if (ball.trail.length > 25) ball.trail.shift();
+    // landing
+    if(b.y >= slotY){
+        b.done = true;
+        resolveBall(b);
+    }
 
-            // Peg collision
-            pegs.forEach(p => {
-                const dx = ball.x - p.x;
-                const dy = ball.y - p.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const minD = ball.r + p.r;
-                if (dist < minD && ball.vy > 0) {
-                    const ang = Math.atan2(dy, dx);
-                    ball.x = p.x + Math.cos(ang) * minD;
-                    ball.y = p.y + Math.sin(ang) * minD;
-                    const spd = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy) * 0.65;
-                    ball.vx = Math.cos(ang) * spd + (Math.random() - 0.5) * 2;
-                    ball.vy = -Math.abs(Math.sin(ang) * spd) * 0.5;
-                    p.hit = 1;
-                    spark(p.x, p.y, 4, ball.color);
-                    if (ballType === 'void' && Math.random() < 0.25) ball.x += (Math.random() - 0.5) * 60;
-                }
-            });
-            // Walls
-            if (ball.x < ball.r) { ball.x = ball.r;
-                ball.vx = Math.abs(ball.vx) * 0.5; }
-            if (ball.x > W - ball.r) { ball.x = W - ball.r;
-                ball.vx = -Math.abs(ball.vx) * 0.5; }
-            // Land
-            if (ball.y >= slotY && !ball.landed) {
-                ball.landed = true;
-                const idx = Math.min(Math.floor(ball.x / slotW), MULTIPLIERS.length - 1);
-                ball.resultMult = MULTIPLIERS[Math.max(0, idx)];
-                // Apply boosts
-                let finalMult = ball.resultMult;
-                if (boosts['double']) finalMult *= 2;
-                if (boosts['reroll'] && finalMult < 1.0 && Math.random() < 0.5) {
-                    finalMult = MULTIPLIERS[Math.floor(Math.random() * MULTIPLIERS.length)];
-                    spark(ball.x, slotY, 15, '#ffd700');
-                }
-                // Ice ball floors at 0.7
-                if (ballType === 'ice' && finalMult < 0.7) finalMult = 0.7;
-                const winAmt = Math.floor(bet * finalMult * streakMult);
-                if (winAmt > 0) {
-                    balance += winAmt;
-                    if (!boosts['streakShield'] || finalMult >= 1.0) {
-                        streak++;
-                        streakMult = Math.min(5.0, 1.0 + streak * 0.3);
-                    }
-                    if (winAmt > bestWin) bestWin = winAmt;
-                    if (finalMult >= 3) spark(ball.x, slotY, 30, '#ffd700');
-                } else {
-                    if (boosts['protect'] && isFirst) {
-                        balance += bet;
-                        toast('🛡️ Protection saved your bet!');
-                    } else if (!boosts['streakShield']) {
-                        streak = Math.max(0, streak - 2);
-                        streakMult = Math.max(1.0, 1.0 + streak * 0.3);
-                    }
-                }
-                spark(ball.x, slotY, winAmt > 0 ? 20 : 8, winAmt > 0 ? '#ffd700' : '#ff8888');
-                ui();
-            }
-            if (ball.y > H + 60 && !ball.landed) { ball.landed = true;
-                ball.resultMult = 0; }
+    // trail (optimized)
+    if(b.trail.length > 15) b.trail.shift();
+    b.trail.push({x:b.x,y:b.y});
+}
+
+/* ============================
+   💰 REWARD SYSTEM
+============================ */
+function resolveBall(b){
+
+    let index = Math.floor(b.x/slotW);
+    index = Math.max(0,Math.min(index,MULTIPLIERS.length-1));
+
+    let mult = MULTIPLIERS[index];
+
+    // 🎯 RARE JACKPOT BOOST
+    if(Math.random() < 0.02){
+        mult *= 2;
+        screenShake(10);
+    }
+
+    const win = Math.floor(bet * mult * streakMult);
+
+    // micro delay (adds anticipation)
+    setTimeout(()=>{
+        if(win > 0){
+            balance += win;
+            streak++;
+            streakMult = 1 + streak*0.25;
+            spawnSpark(b.x,slotY,15);
+        }else{
+            streak = Math.max(0,streak-2);
+            streakMult = 1 + streak*0.25;
         }
+    },80);
+}
 
-        function anim() {
-            step();
-            if (!ball.done) requestAnimationFrame(anim);
+/* ============================
+   ✨ PARTICLES (pooled)
+============================ */
+function spawnSpark(x,y,n){
+    for(let i=0;i<n;i++){
+        sparkles.push({
+            x,y,
+            vx:(Math.random()-0.5)*3,
+            vy:(Math.random()-0.5)*3,
+            life:20
+        });
+    }
+}
+
+function updateSpark(){
+    for(let i=sparkles.length-1;i>=0;i--){
+        let s = sparkles[i];
+        s.x+=s.vx;
+        s.y+=s.vy;
+        s.life--;
+        if(s.life<=0) sparkles.splice(i,1);
+    }
+}
+
+/* ============================
+   🎨 DRAW
+============================ */
+function draw(){
+
+    ctx.clearRect(0,0,W,H);
+
+    // pegs
+    ctx.fillStyle="#e0b030";
+    for(let p of pegs){
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,p.r,0,6.28);
+        ctx.fill();
+    }
+
+    // balls
+    for(let b of balls){
+
+        // trail
+        ctx.strokeStyle="rgba(255,255,255,0.2)";
+        ctx.beginPath();
+        for(let i=0;i<b.trail.length;i++){
+            let t=b.trail[i];
+            if(i===0) ctx.moveTo(t.x,t.y);
+            else ctx.lineTo(t.x,t.y);
         }
-        requestAnimationFrame(anim);
+        ctx.stroke();
+
+        // body
+        ctx.fillStyle="#f0c040";
+        ctx.beginPath();
+        ctx.arc(b.x,b.y,b.r,0,6.28);
+        ctx.fill();
     }
 
-    function checkAllDone() {
-        if (balls.every(b => b.done)) {
-            dropping = false;
-            balls = [];
-            boostUsedThisRound = {};
-            renderBoostCards();
-            ui();
-        }
+    // sparkles
+    ctx.fillStyle="#fff";
+    for(let s of sparkles){
+        ctx.globalAlpha = s.life/20;
+        ctx.fillRect(s.x,s.y,2,2);
+    }
+    ctx.globalAlpha = 1;
+}
+
+/* ============================
+   📳 SCREEN SHAKE
+============================ */
+let shake = 0;
+function screenShake(power){
+    shake = power;
+}
+
+/* ============================
+   🔁 LOOP
+============================ */
+function loop(){
+
+    // physics
+    for(let b of balls) stepBall(b);
+
+    // cleanup
+    balls = balls.filter(b=>!b.done);
+
+    if(balls.length===0) dropping=false;
+
+    updateSpark();
+
+    // shake
+    if(shake>0){
+        ctx.setTransform(1,0,0,1,
+            (Math.random()-0.5)*shake,
+            (Math.random()-0.5)*shake
+        );
+        shake*=0.85;
+    }else{
+        ctx.setTransform(1,0,0,1,0,0);
     }
 
-    // ============ LOOP ============
-    function updateSparkles() {
-        sparkles = sparkles.filter(s => { s.x += s.vx;
-            s.y += s.vy;
-            s.vy += 0.08;
-            s.life--;
-            s.a = s.life / 35; return s.life > 0; });
-    }
+    draw();
+    requestAnimationFrame(loop);
+}
 
-    function updatePegs() {
-        pegs.forEach(p => { if (p.hit > 0) p.hit -= 0.04; if (p.hit < 0) p.hit = 0; });
-    }
+/* ============================
+   INIT
+============================ */
+window.onload = ()=>{
+    resize();
+    loop();
+};
 
-    function loop() {
-        updatePegs();
-        updateSparkles();
-        draw();
-        requestAnimationFrame(loop);
-    }
-
-    function resize() {
-        const wrap = document.getElementById('canvasWrap');
-        const r = wrap.getBoundingClientRect();
-        W = r.width;
-        H = r.height;
-        canvas.width = W;
-        canvas.height = H;
-        calcPegs();
-    }
-
-    // ============ INIT ============
-    window.addEventListener('resize', resize);
-    window.addEventListener('DOMContentLoaded', () => {
-        load();
-        resize();
-        calcPegs();
-        ui();
-        renderBoostCards();
-        loop();
-    });
-
-    // Keyboard
-    document.addEventListener('keydown', e => {
-        if (e.code === 'Space') { e.preventDefault();
-            launchBalls(); }
-        if (e.code === 'ArrowUp') adjBet(5);
-        if (e.code === 'ArrowDown') adjBet(-5);
-        if (e.code === 'ArrowRight') adjMulti(1);
-        if (e.code === 'ArrowLeft') adjMulti(-1);
-    });
 </script>
 </body>
 </html>
